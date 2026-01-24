@@ -460,6 +460,7 @@ struct WebViewContainer: UIViewRepresentable {
         private var isLoadingInternal: Bool = false
         var lastLoadedURL: String = ""
         var isInternalNavigation: Bool = false // WebView内部での遷移かどうかのフラグ
+        private var lastLoadingStartTime: Date? // 読み込み開始時刻（安全装置用）
         
         // 広告関連のURLパターン
         private let adBlockPatterns = [
@@ -485,9 +486,11 @@ struct WebViewContainer: UIViewRepresentable {
         // JSからのメッセージを受け取る関数
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if message.name == "adBlockFinished" {
+                print("[U-FRET Ad Blocker] adBlockFinishedメッセージを受信")
                 DispatchQueue.main.async {
                     // ここで初めて「読み込み完了」とする
                     self.isLoadingInternal = false
+                    self.lastLoadingStartTime = nil // タイマーをリセット
                     self.parent.isLoading?.wrappedValue = false
                     
                     // 読み込み完了時に、すべてのトリガーを確実にリセット
@@ -495,10 +498,15 @@ struct WebViewContainer: UIViewRepresentable {
                     self.parent.goForwardTrigger?.wrappedValue = false
                     self.parent.reloadTrigger?.wrappedValue = false
                     
+                    // 内部遷移フラグもリセット
+                    self.isInternalNavigation = false
+                    
                     // 読み込み完了時に、ナビゲーション状態を更新
                     if let webView = self.webView {
                         self.updateNavigationState(webView: webView)
                     }
+                    
+                    print("[U-FRET Ad Blocker] ロード状態を解除完了")
                 }
             }
         }
@@ -518,6 +526,31 @@ struct WebViewContainer: UIViewRepresentable {
         
         // 読み込み中かどうかを確認
         func isLoading() -> Bool {
+            // 安全装置: isLoadingInternalが長時間trueのままの場合、自動的にfalseにする
+            // これは、JavaScriptの完了通知が届かない場合のフォールバック
+            if isLoadingInternal {
+                // 最後の読み込み開始時刻を記録（初回のみ）
+                if lastLoadingStartTime == nil {
+                    lastLoadingStartTime = Date()
+                } else {
+                    // 5秒以上経過している場合は、強制的にfalseにする
+                    if let startTime = lastLoadingStartTime, Date().timeIntervalSince(startTime) > 5.0 {
+                        print("[U-FRET Ad Blocker] 安全装置: isLoadingInternalが5秒以上trueのまま - 強制的にfalseに設定")
+                        isLoadingInternal = false
+                        lastLoadingStartTime = nil
+                        DispatchQueue.main.async {
+                            self.parent.isLoading?.wrappedValue = false
+                            self.parent.goBackTrigger?.wrappedValue = false
+                            self.parent.goForwardTrigger?.wrappedValue = false
+                            self.parent.reloadTrigger?.wrappedValue = false
+                            self.isInternalNavigation = false
+                        }
+                    }
+                }
+            } else {
+                // falseになったら、タイマーをリセット
+                lastLoadingStartTime = nil
+            }
             return isLoadingInternal
         }
         
@@ -528,11 +561,20 @@ struct WebViewContainer: UIViewRepresentable {
                 return
             }
             
+            // サブフレーム（iframe）のリクエストかどうかを判定
+            let isSubframe = navigationAction.targetFrame == nil || !navigationAction.targetFrame!.isMainFrame
+            
             let urlString = url.absoluteString.lowercased()
             
             // 広告関連のURLをブロック
             for pattern in adBlockPatterns {
                 if urlString.contains(pattern.lowercased()) {
+                    // サブフレームの広告リクエストは静かにキャンセル
+                    if isSubframe {
+                        print("[U-FRET Ad Blocker] サブフレームの広告リクエストをブロック: \(urlString)")
+                    } else {
+                        print("[U-FRET Ad Blocker] メインフレームの広告リクエストをブロック: \(urlString)")
+                    }
                     decisionHandler(.cancel)
                     return
                 }
@@ -548,11 +590,20 @@ struct WebViewContainer: UIViewRepresentable {
                 return
             }
             
+            // サブフレーム（iframe）のレスポンスかどうかを判定
+            let isSubframe = navigationResponse.isForMainFrame == false
+            
             let urlString = url.absoluteString.lowercased()
             
             // 広告関連のURLをブロック
             for pattern in adBlockPatterns {
                 if urlString.contains(pattern.lowercased()) {
+                    // サブフレームの広告レスポンスは静かにキャンセル
+                    if isSubframe {
+                        print("[U-FRET Ad Blocker] サブフレームの広告レスポンスをブロック: \(urlString)")
+                    } else {
+                        print("[U-FRET Ad Blocker] メインフレームの広告レスポンスをブロック: \(urlString)")
+                    }
                     decisionHandler(.cancel)
                     return
                 }
@@ -562,8 +613,13 @@ struct WebViewContainer: UIViewRepresentable {
         }
         
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            // メインフレームのナビゲーション開始時のみ処理
+            // サブフレームのナビゲーションは無視（広告iframeなど）
+            print("[U-FRET Ad Blocker] didStartProvisionalNavigation: URL=\(webView.url?.absoluteString ?? "nil")")
+            
             // 読み込み開始
             isLoadingInternal = true
+            lastLoadingStartTime = Date() // タイマーを開始
             // プロビジョナルナビゲーション開始時は、まだURLが確定していないので
             // isInternalNavigationフラグはリセットしない（didFinishで判定）
             DispatchQueue.main.async {
@@ -577,6 +633,9 @@ struct WebViewContainer: UIViewRepresentable {
         }
         
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            // メインフレームのナビゲーション完了時のみ処理
+            print("[U-FRET Ad Blocker] didFinish: URL=\(webView.url?.absoluteString ?? "nil")")
+            
             // ここでは isLoading を false にしない！
             // ページが「表示」された後、JSの実行完了を待つ
             
@@ -610,10 +669,90 @@ struct WebViewContainer: UIViewRepresentable {
                     } catch(e) {}
                 });
                 
+                // スクロールを強制的に有効化（サブフレームエラー後の復旧対策）
+                try {
+                    const body = document.body;
+                    const html = document.documentElement;
+                    
+                    if (body) {
+                        const bodyStyle = window.getComputedStyle(body);
+                        if (bodyStyle.overflow === 'hidden' || bodyStyle.overflowY === 'hidden') {
+                            body.style.overflow = '';
+                            body.style.overflowY = '';
+                            body.style.setProperty('overflow', '', 'important');
+                            body.style.setProperty('overflow-y', '', 'important');
+                            console.log('[U-FRET Ad Blocker] bodyのoverflowを強制解除 (didFinish)');
+                        }
+                        if (bodyStyle.position === 'fixed') {
+                            body.style.position = '';
+                            body.style.setProperty('position', '', 'important');
+                            console.log('[U-FRET Ad Blocker] bodyのposition: fixedを解除 (didFinish)');
+                        }
+                        if (body.classList.contains('modal-open')) {
+                            body.classList.remove('modal-open');
+                            console.log('[U-FRET Ad Blocker] bodyのmodal-openクラスを削除 (didFinish)');
+                        }
+                        // 強制的にスクロール可能にする
+                        body.style.setProperty('overflow', 'auto', 'important');
+                        body.style.setProperty('overflow-y', 'auto', 'important');
+                        body.style.setProperty('position', 'static', 'important');
+                    }
+                    
+                    if (html) {
+                        const htmlStyle = window.getComputedStyle(html);
+                        if (htmlStyle.overflow === 'hidden' || htmlStyle.overflowY === 'hidden') {
+                            html.style.overflow = '';
+                            html.style.overflowY = '';
+                            html.style.setProperty('overflow', '', 'important');
+                            html.style.setProperty('overflow-y', '', 'important');
+                            console.log('[U-FRET Ad Blocker] htmlのoverflowを強制解除 (didFinish)');
+                        }
+                        if (htmlStyle.position === 'fixed') {
+                            html.style.position = '';
+                            html.style.setProperty('position', '', 'important');
+                            console.log('[U-FRET Ad Blocker] htmlのposition: fixedを解除 (didFinish)');
+                        }
+                        // 強制的にスクロール可能にする
+                        html.style.setProperty('overflow', 'auto', 'important');
+                        html.style.setProperty('overflow-y', 'auto', 'important');
+                        html.style.setProperty('position', 'static', 'important');
+                    }
+                    
+                    // CSSで強制的にスクロールを許可（最後の手段）
+                    const styleId = 'ufret-adblocker-scroll-fix-didfinish';
+                    if (!document.getElementById(styleId)) {
+                        const style = document.createElement('style');
+                        style.id = styleId;
+                        style.textContent = `
+                            body, html {
+                                overflow: auto !important;
+                                overflow-y: auto !important;
+                                overflow-x: hidden !important;
+                                position: static !important;
+                            }
+                            body.modal-open {
+                                overflow: auto !important;
+                                position: static !important;
+                            }
+                        `;
+                        if (document.head) {
+                            document.head.appendChild(style);
+                        } else if (document.body) {
+                            document.body.appendChild(style);
+                        }
+                        console.log('[U-FRET Ad Blocker] スクロール有効化CSSを注入 (didFinish)');
+                    }
+                } catch(e) {
+                    console.error('[U-FRET Ad Blocker] スクロール有効化エラー:', e);
+                }
+                
                 // UIの更新が完全に終わるまで待ってから通知を送る
                 setTimeout(() => {
                     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.adBlockFinished) {
                         window.webkit.messageHandlers.adBlockFinished.postMessage(true);
+                        console.log('[U-FRET Ad Blocker] adBlockFinished通知を送信 (didFinish)');
+                    } else {
+                        console.error('[U-FRET Ad Blocker] adBlockFinishedハンドラーが見つかりません');
                     }
                 }, 500); // 500ms待ってから通知（UI更新の完了を待つ）
             })();
@@ -622,6 +761,36 @@ struct WebViewContainer: UIViewRepresentable {
             // JavaScriptを実行（完了通知はJS側から送られる）
             webView.evaluateJavaScript(removeAdsScript) { [weak self] (result, error) in
                 guard let self = self else { return }
+                
+                if let error = error {
+                    print("[U-FRET Ad Blocker] JavaScript実行エラー: \(error.localizedDescription)")
+                    // エラーが発生した場合でも、タイムアウトで確実にロード状態を解除
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        if self.isLoadingInternal {
+                            print("[U-FRET Ad Blocker] JavaScript実行エラー後のタイムアウト - ロード状態を解除")
+                            self.isLoadingInternal = false
+                            self.parent.isLoading?.wrappedValue = false
+                            self.parent.goBackTrigger?.wrappedValue = false
+                            self.parent.goForwardTrigger?.wrappedValue = false
+                            self.parent.reloadTrigger?.wrappedValue = false
+                            self.isInternalNavigation = false
+                        }
+                    }
+                } else {
+                    print("[U-FRET Ad Blocker] JavaScript実行成功 - 完了通知を待機")
+                    // JavaScript実行成功後、完了通知が来ない場合のタイムアウト（2秒）
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                        if self.isLoadingInternal {
+                            print("[U-FRET Ad Blocker] 完了通知タイムアウト - ロード状態を強制解除")
+                            self.isLoadingInternal = false
+                            self.parent.isLoading?.wrappedValue = false
+                            self.parent.goBackTrigger?.wrappedValue = false
+                            self.parent.goForwardTrigger?.wrappedValue = false
+                            self.parent.reloadTrigger?.wrappedValue = false
+                            self.isInternalNavigation = false
+                        }
+                    }
+                }
                 
                 // URL更新処理のみ実行（isLoadingはJSからの通知で更新される）
                 DispatchQueue.main.async {
@@ -648,16 +817,27 @@ struct WebViewContainer: UIViewRepresentable {
         }
         
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            let nsError = error as NSError
+            let errorDomain = nsError.domain
+            let errorCode = nsError.code
+            
             // エラーが広告関連のサブフレーム（iframe）の場合は無視
             // WebKitErrorDomain code=102は、フレームの読み込みが中断されたことを示す
             // 広告ブロッカーとして、広告iframeの読み込み失敗は正常な動作
-            let nsError = error as NSError
-            if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 {
+            if errorDomain == "WebKitErrorDomain" && errorCode == 102 {
                 // サブフレーム（広告iframe）のエラーは無視
+                print("[U-FRET Ad Blocker] サブフレームのエラーを無視 (didFail): domain=\(errorDomain), code=\(errorCode)")
+                return
+            }
+            
+            // NSURLErrorCancelled (-999) も広告ブロックによる正常な動作として無視
+            if errorDomain == NSURLErrorDomain && errorCode == NSURLErrorCancelled {
+                print("[U-FRET Ad Blocker] リクエストキャンセルを無視 (didFail): domain=\(errorDomain), code=\(errorCode)")
                 return
             }
             
             // メインフレームのエラーのみ処理
+            print("[U-FRET Ad Blocker] メインフレームのエラーを処理 (didFail): domain=\(errorDomain), code=\(errorCode), description=\(error.localizedDescription)")
             isLoadingInternal = false
             DispatchQueue.main.async {
                 self.parent.isLoading?.wrappedValue = false
@@ -671,24 +851,26 @@ struct WebViewContainer: UIViewRepresentable {
         }
         
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            // エラーが広告関連のサブフレーム（iframe）の場合は無視
-            // WebKitErrorDomain code=102は、フレームの読み込みが中断されたことを示す
-            // 広告ブロッカーとして、広告iframeの読み込み失敗は正常な動作
             let nsError = error as NSError
+            let errorDomain = nsError.domain
+            let errorCode = nsError.code
             
             // NSURLErrorCancelled (-999) も広告ブロックによる正常な動作として無視
-            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
-                // リクエストキャンセルは広告ブロックによる正常な動作
+            // これはサブフレームのリクエストがキャンセルされた場合によく発生する
+            if errorDomain == NSURLErrorDomain && errorCode == NSURLErrorCancelled {
+                print("[U-FRET Ad Blocker] リクエストキャンセルを無視 (didFailProvisionalNavigation): domain=\(errorDomain), code=\(errorCode)")
                 return
             }
             
             // WebKitErrorDomain code=102（フレーム読み込み中断）も無視
-            if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 {
-                // サブフレーム（広告iframe）のエラーは無視
+            // これはサブフレーム（広告iframe）の読み込みが中断された場合に発生する
+            if errorDomain == "WebKitErrorDomain" && errorCode == 102 {
+                print("[U-FRET Ad Blocker] サブフレームのエラーを無視 (didFailProvisionalNavigation): domain=\(errorDomain), code=\(errorCode)")
                 return
             }
             
             // メインフレームのエラーのみ処理
+            print("[U-FRET Ad Blocker] メインフレームのエラーを処理 (didFailProvisionalNavigation): domain=\(errorDomain), code=\(errorCode), description=\(error.localizedDescription)")
             isLoadingInternal = false
             DispatchQueue.main.async {
                 self.parent.isLoading?.wrappedValue = false

@@ -3,6 +3,14 @@
 
 (function () {
   'use strict';
+  
+  console.log('[U-FRET Ad Blocker] スクリプト読み込み開始:', {
+    readyState: document.readyState,
+    hasBody: !!document.body,
+    hasDocumentElement: !!document.documentElement,
+    url: window.location.href,
+    timestamp: Date.now()
+  });
 
   // 広告スクリプトのエラーを完全にブロック（最優先）
   (function () {
@@ -229,8 +237,13 @@
 
   // スクロール位置の保護（最優先で設定）
   (function () {
+    console.log('[U-FRET Ad Blocker] スクロール保護処理を初期化');
     let lastScrollTop = 0;
     let scrollProtectionActive = false;
+    let userInitiatedScroll = false;
+    let lastUserScrollTime = 0;
+    let scrollPositionHistory = [];
+    const USER_SCROLL_TIMEOUT = 2000; // ユーザーのスクロール検出タイムアウト（2秒）
 
     // scrollTo/scrollをオーバーライド
     const originalScrollTo = window.scrollTo;
@@ -238,27 +251,63 @@
 
     window.scrollTo = function (x, y) {
       const currentScroll = window.pageYOffset || document.documentElement.scrollTop || 0;
+      const targetY = typeof x === 'object' && x ? x.top : y;
+      console.log('[U-FRET Ad Blocker] scrollTo呼び出し:', {
+        currentScroll,
+        targetY,
+        x,
+        y,
+        timestamp: Date.now()
+      });
       lastScrollTop = currentScroll;
 
       // スクロール位置が50px以上の場合、0へのスクロールをブロック
       if (currentScroll > 50) {
         if (y === 0 || (typeof x === 'object' && x && x.top === 0 && x.left === 0)) {
+          console.log('[U-FRET Ad Blocker] scrollTo(0)をブロック:', {
+            currentScroll,
+            lastScrollTop,
+            timestamp: Date.now()
+          });
           return; // scrollTop: 0をブロック
         }
       }
+      console.log('[U-FRET Ad Blocker] scrollToを許可:', {
+        currentScroll,
+        targetY,
+        timestamp: Date.now()
+      });
       return originalScrollTo.apply(this, arguments);
     };
 
     window.scroll = function (x, y) {
       const currentScroll = window.pageYOffset || document.documentElement.scrollTop || 0;
+      const targetY = typeof x === 'object' && x ? x.top : y;
+      console.log('[U-FRET Ad Blocker] scroll呼び出し:', {
+        currentScroll,
+        targetY,
+        x,
+        y,
+        timestamp: Date.now()
+      });
       lastScrollTop = currentScroll;
 
       // スクロール位置が50px以上の場合、0へのスクロールをブロック
       if (currentScroll > 50) {
         if (y === 0 || (typeof x === 'object' && x && x.top === 0 && x.left === 0)) {
+          console.log('[U-FRET Ad Blocker] scroll(0)をブロック:', {
+            currentScroll,
+            lastScrollTop,
+            timestamp: Date.now()
+          });
           return; // scrollTop: 0をブロック
         }
       }
+      console.log('[U-FRET Ad Blocker] scrollを許可:', {
+        currentScroll,
+        targetY,
+        timestamp: Date.now()
+      });
       return originalScroll.apply(this, arguments);
     };
 
@@ -266,29 +315,173 @@
     const originalScrollIntoView = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = function (options) {
       const currentPos = window.pageYOffset || document.documentElement.scrollTop || 0;
+      console.log('[U-FRET Ad Blocker] scrollIntoView呼び出し:', {
+        currentPos,
+        options,
+        element: this.tagName + (this.id ? '#' + this.id : ''),
+        timestamp: Date.now()
+      });
       if (currentPos > 50) {
         // スクロール位置が50px以上の場合、トップへのスクロールをブロック
         if (!options || (options.block === 'start' && currentPos > 50)) {
+          console.log('[U-FRET Ad Blocker] scrollIntoView(block: start)をブロック:', {
+            currentPos,
+            timestamp: Date.now()
+          });
           return;
         }
       }
+      console.log('[U-FRET Ad Blocker] scrollIntoViewを許可:', {
+        currentPos,
+        options,
+        timestamp: Date.now()
+      });
       return originalScrollIntoView.apply(this, arguments);
     };
 
-    // スクロール位置の自動復元（強化版）
+    // ユーザーによるスクロールを検出（より確実に）
+    ['wheel', 'touchstart', 'touchmove', 'keydown', 'mousedown'].forEach(eventType => {
+      document.addEventListener(eventType, () => {
+        const currentScroll = window.pageYOffset || document.documentElement.scrollTop || 0;
+        userInitiatedScroll = true;
+        lastUserScrollTime = Date.now();
+        console.log('[U-FRET Ad Blocker] ユーザー操作を検出:', {
+          eventType,
+          currentScroll,
+          timestamp: Date.now()
+        });
+        // スクロール位置を記録
+        scrollPositionHistory.push({ time: Date.now(), position: currentScroll });
+        // 履歴は最新10件のみ保持
+        if (scrollPositionHistory.length > 10) {
+          scrollPositionHistory.shift();
+        }
+      }, { passive: true });
+    });
+
+    // スクロール位置の自動復元（ユーザーのスクロール中は絶対に実行しない）
     const protectScrollPosition = () => {
+      const now = Date.now();
+      const timeSinceLastUserScroll = now - lastUserScrollTime;
       const currentScrollTop = window.pageYOffset || document.documentElement.scrollTop || 0;
       const bodyScrollTop = document.body ? document.body.scrollTop || 0 : 0;
+      
+      console.log('[U-FRET Ad Blocker] protectScrollPosition実行:', {
+        currentScrollTop,
+        bodyScrollTop,
+        lastScrollTop,
+        userInitiatedScroll,
+        timeSinceLastUserScroll,
+        scrollProtectionActive,
+        timestamp: Date.now()
+      });
+      
+      // ユーザーが最近スクロールした場合は、復元処理を完全にスキップ
+      if (userInitiatedScroll && timeSinceLastUserScroll < USER_SCROLL_TIMEOUT) {
+        // ユーザーのスクロール位置を更新
+        if (currentScrollTop > 0) {
+          lastScrollTop = currentScrollTop;
+        }
+        console.log('[U-FRET Ad Blocker] ユーザーのスクロール中 - 復元処理をスキップ:', {
+          currentScrollTop,
+          lastScrollTop,
+          timeSinceLastUserScroll,
+          timestamp: Date.now()
+        });
+        return; // ユーザーのスクロール中は復元処理を実行しない
+      }
 
-      // 突然0に戻された場合、直前の位置を復元
-      if (lastScrollTop > 50 && currentScrollTop === 0 && bodyScrollTop === 0 && !scrollProtectionActive) {
+      // ユーザーのスクロールが終了したことを確認
+      if (timeSinceLastUserScroll >= USER_SCROLL_TIMEOUT) {
+        if (userInitiatedScroll) {
+          console.log('[U-FRET Ad Blocker] ユーザーのスクロール終了を検出:', {
+            timeSinceLastUserScroll,
+            timestamp: Date.now()
+          });
+        }
+        userInitiatedScroll = false;
+      }
+
+      // スクロール位置が変化している場合は、ユーザーのスクロールの可能性があるので復元しない
+      if (scrollPositionHistory.length >= 2) {
+        const recentPositions = scrollPositionHistory.slice(-3);
+        const isPositionChanging = recentPositions.some((pos, index) => {
+          if (index === 0) return false;
+          return Math.abs(pos.position - recentPositions[index - 1].position) > 5;
+        });
+        if (isPositionChanging && timeSinceLastUserScroll < USER_SCROLL_TIMEOUT * 2) {
+          // 位置が変化している場合は、ユーザーのスクロールの可能性が高い
+          if (currentScrollTop > 0) {
+            lastScrollTop = currentScrollTop;
+          }
+          console.log('[U-FRET Ad Blocker] スクロール位置が変化中 - 復元処理をスキップ:', {
+            currentScrollTop,
+            lastScrollTop,
+            isPositionChanging,
+            timeSinceLastUserScroll,
+            timestamp: Date.now()
+          });
+          return;
+        }
+      }
+
+      // 突然0に戻された場合のみ、直前の位置を復元（ユーザーのスクロール中でないことを確認）
+      const shouldRestore = lastScrollTop > 50 && currentScrollTop === 0 && bodyScrollTop === 0 && !scrollProtectionActive && !userInitiatedScroll && timeSinceLastUserScroll >= USER_SCROLL_TIMEOUT;
+      console.log('[U-FRET Ad Blocker] 復元判定:', {
+        shouldRestore,
+        lastScrollTop,
+        currentScrollTop,
+        bodyScrollTop,
+        scrollProtectionActive,
+        userInitiatedScroll,
+        timeSinceLastUserScroll,
+        timestamp: Date.now()
+      });
+
+      if (shouldRestore) {
         scrollProtectionActive = true;
+        console.log('[U-FRET Ad Blocker] スクロール位置を復元予定:', {
+          lastScrollTop,
+          currentScrollTop,
+          timestamp: Date.now()
+        });
         setTimeout(() => {
-          if (originalScrollTo && lastScrollTop > 0) {
+          // 再度確認：ユーザーがスクロールしていないことを確認
+          const checkTime = Date.now();
+          const checkTimeSinceLastUserScroll = checkTime - lastUserScrollTime;
+          const checkScrollTop = window.pageYOffset || document.documentElement.scrollTop || 0;
+          const shouldActuallyRestore = !userInitiatedScroll && checkTimeSinceLastUserScroll >= USER_SCROLL_TIMEOUT && checkScrollTop === 0 && originalScrollTo && lastScrollTop > 0;
+          
+          console.log('[U-FRET Ad Blocker] 復元実行前の再確認:', {
+            shouldActuallyRestore,
+            checkScrollTop,
+            lastScrollTop,
+            userInitiatedScroll,
+            checkTimeSinceLastUserScroll,
+            timestamp: Date.now()
+          });
+
+          if (shouldActuallyRestore) {
+            console.log('[U-FRET Ad Blocker] スクロール位置を復元実行:', {
+              from: checkScrollTop,
+              to: lastScrollTop,
+              timestamp: Date.now()
+            });
             originalScrollTo.call(window, 0, lastScrollTop);
+          } else {
+            console.log('[U-FRET Ad Blocker] 復元をキャンセル:', {
+              reason: !userInitiatedScroll ? 'userInitiatedScroll=true' : 
+                      checkTimeSinceLastUserScroll < USER_SCROLL_TIMEOUT ? 'timeSinceLastUserScroll < timeout' :
+                      checkScrollTop !== 0 ? 'checkScrollTop !== 0' : 'other',
+              checkScrollTop,
+              lastScrollTop,
+              userInitiatedScroll,
+              checkTimeSinceLastUserScroll,
+              timestamp: Date.now()
+            });
           }
           scrollProtectionActive = false;
-        }, 10);
+        }, 50); // 10ms → 50msに延長して、ユーザーのスクロールを確実に検出
       } else if (currentScrollTop > 0) {
         lastScrollTop = currentScrollTop;
       }
@@ -302,41 +495,42 @@
       }
     };
 
-    // より頻繁に監視（30ms間隔に短縮）
-    setInterval(protectScrollPosition, 30);
+    // 監視頻度を下げる（30ms → 200ms）ユーザーのスクロールを妨げないように
+    console.log('[U-FRET Ad Blocker] setIntervalでスクロール保護を開始 (200ms間隔)');
+    setInterval(protectScrollPosition, 200);
 
-    // scrollイベントでも監視
+    // scrollイベントでも監視（ただし、ユーザーのスクロール中は実行しない）
     let scrollTimeout;
-    let userInitiatedScroll = false;
-
-    // ユーザーによるスクロールを検出
-    ['wheel', 'touchmove', 'keydown'].forEach(eventType => {
-      document.addEventListener(eventType, () => {
-        userInitiatedScroll = true;
-        setTimeout(() => {
-          userInitiatedScroll = false;
-        }, 1000);
-      }, { passive: true });
-    });
-
     window.addEventListener('scroll', () => {
+      const currentScroll = window.pageYOffset || document.documentElement.scrollTop || 0;
+      console.log('[U-FRET Ad Blocker] scrollイベント発生:', {
+        currentScroll,
+        timestamp: Date.now()
+      });
+      // スクロール位置を記録
+      scrollPositionHistory.push({ time: Date.now(), position: currentScroll });
+      if (scrollPositionHistory.length > 10) {
+        scrollPositionHistory.shift();
+      }
+
       clearTimeout(scrollTimeout);
       scrollTimeout = setTimeout(() => {
-        protectScrollPosition();
-        // ユーザーによるスクロールでない場合、位置を保護
-        if (!userInitiatedScroll) {
+        // ユーザーのスクロール中でない場合のみ実行
+        const now = Date.now();
+        const timeSinceLastUserScroll = now - lastUserScrollTime;
+        const shouldCallProtect = !userInitiatedScroll || timeSinceLastUserScroll >= USER_SCROLL_TIMEOUT;
+        console.log('[U-FRET Ad Blocker] scrollイベントからprotectScrollPosition呼び出し:', {
+          shouldCallProtect,
+          userInitiatedScroll,
+          timeSinceLastUserScroll,
+          timestamp: Date.now()
+        });
+        if (shouldCallProtect) {
           protectScrollPosition();
         }
-      }, 10);
+      }, 100); // 10ms → 100msに延長
     }, { passive: true });
-
-    // requestAnimationFrameでも監視
-    let rafId;
-    const rafProtect = () => {
-      protectScrollPosition();
-      rafId = requestAnimationFrame(rafProtect);
-    };
-    rafId = requestAnimationFrame(rafProtect);
+    console.log('[U-FRET Ad Blocker] scrollイベントリスナーを登録完了');
   })();
 
   // 削除対象のセレクタパターン
@@ -679,17 +873,38 @@
 
   // メインの削除処理
   function removeAds() {
+    console.log('[U-FRET Ad Blocker] removeAds()開始:', {
+      timestamp: Date.now()
+    });
     let totalRemoved = 0;
 
-    totalRemoved += removeBySelectors();
-    totalRemoved += removeByIDPatterns();
-    totalRemoved += removeByClassPatterns();
-    totalRemoved += removeAdScripts();
-    totalRemoved += removeHiddenAdIframes();
+    const removedBySelectors = removeBySelectors();
+    const removedByID = removeByIDPatterns();
+    const removedByClass = removeByClassPatterns();
+    const removedScripts = removeAdScripts();
+    const removedIframes = removeHiddenAdIframes();
+    
+    totalRemoved = removedBySelectors + removedByID + removedByClass + removedScripts + removedIframes;
+
+    if (totalRemoved > 0) {
+      console.log('[U-FRET Ad Blocker] 広告要素を削除:', {
+        bySelectors: removedBySelectors,
+        byID: removedByID,
+        byClass: removedByClass,
+        scripts: removedScripts,
+        iframes: removedIframes,
+        total: totalRemoved,
+        timestamp: Date.now()
+      });
+    }
 
     // 広告削除後にスクロールを有効化
     enableScroll();
 
+    console.log('[U-FRET Ad Blocker] removeAds()完了:', {
+      totalRemoved,
+      timestamp: Date.now()
+    });
     return totalRemoved;
   }
 
@@ -725,29 +940,50 @@
 
   // スクロールを有効化する関数（包括的対応）
   function enableScroll() {
+    console.log('[U-FRET Ad Blocker] enableScroll()呼び出し:', {
+      timestamp: Date.now()
+    });
     const body = document.body;
     const html = document.documentElement;
 
     if (body) {
       // overflowスタイルの強制解除
       const bodyStyle = window.getComputedStyle(body);
-      if (bodyStyle.overflow === 'hidden' || bodyStyle.overflowY === 'hidden') {
+      const bodyOverflow = bodyStyle.overflow;
+      const bodyOverflowY = bodyStyle.overflowY;
+      const bodyPosition = bodyStyle.position;
+      const bodyHeight = bodyStyle.height;
+      
+      if (bodyOverflow === 'hidden' || bodyOverflowY === 'hidden') {
+        console.log('[U-FRET Ad Blocker] bodyのoverflowを解除:', {
+          before: { overflow: bodyOverflow, overflowY: bodyOverflowY },
+          timestamp: Date.now()
+        });
         body.style.overflow = '';
         body.style.overflowY = '';
       }
 
       // position: fixedの解除（モーダルなどで設定される場合がある）
-      if (bodyStyle.position === 'fixed') {
+      if (bodyPosition === 'fixed') {
+        console.log('[U-FRET Ad Blocker] bodyのposition: fixedを解除:', {
+          timestamp: Date.now()
+        });
         body.style.position = '';
       }
 
       // height: 100%の解除
-      if (bodyStyle.height === '100%' && bodyStyle.overflow === 'hidden') {
+      if (bodyHeight === '100%' && bodyOverflow === 'hidden') {
+        console.log('[U-FRET Ad Blocker] bodyのheight: 100%を解除:', {
+          timestamp: Date.now()
+        });
         body.style.height = '';
       }
 
       // Bootstrapモーダルの.modal-openクラスを削除
       if (body.classList.contains('modal-open')) {
+        console.log('[U-FRET Ad Blocker] bodyのmodal-openクラスを削除:', {
+          timestamp: Date.now()
+        });
         body.classList.remove('modal-open');
       }
 
@@ -765,23 +1001,40 @@
 
     if (html) {
       const htmlStyle = window.getComputedStyle(html);
-      if (htmlStyle.overflow === 'hidden' || htmlStyle.overflowY === 'hidden') {
+      const htmlOverflow = htmlStyle.overflow;
+      const htmlOverflowY = htmlStyle.overflowY;
+      const htmlPosition = htmlStyle.position;
+      
+      if (htmlOverflow === 'hidden' || htmlOverflowY === 'hidden') {
+        console.log('[U-FRET Ad Blocker] htmlのoverflowを解除:', {
+          before: { overflow: htmlOverflow, overflowY: htmlOverflowY },
+          timestamp: Date.now()
+        });
         html.style.overflow = '';
         html.style.overflowY = '';
       }
 
       // position: fixedの解除
-      if (htmlStyle.position === 'fixed') {
+      if (htmlPosition === 'fixed') {
+        console.log('[U-FRET Ad Blocker] htmlのposition: fixedを解除:', {
+          timestamp: Date.now()
+        });
         html.style.position = '';
       }
     }
 
     // jQueryのscrollTopアニメーションを無効化（干渉を防ぐ）
     if (typeof jQuery !== 'undefined' && typeof jQuery.fn !== 'undefined') {
+      console.log('[U-FRET Ad Blocker] jQueryのscrollTopアニメーションを無効化:', {
+        timestamp: Date.now()
+      });
       const originalAnimate = jQuery.fn.animate;
       jQuery.fn.animate = function (prop, speed, easing, callback) {
         // scrollTop: 0のアニメーションをブロック
         if (prop && typeof prop === 'object' && prop.scrollTop === 0) {
+          console.log('[U-FRET Ad Blocker] jQuery.animate(scrollTop: 0)をブロック:', {
+            timestamp: Date.now()
+          });
           return this;
         }
         return originalAnimate.apply(this, arguments);
@@ -791,6 +1044,9 @@
       const originalScrollTop = jQuery.fn.scrollTop;
       jQuery.fn.scrollTop = function (value) {
         if (value === 0 || value === '0') {
+          console.log('[U-FRET Ad Blocker] jQuery.scrollTop(0)をブロック:', {
+            timestamp: Date.now()
+          });
           return this;
         }
         return originalScrollTop.apply(this, arguments);
@@ -798,87 +1054,29 @@
     }
 
     // ネイティブのscrollTo/scrollを常に監視・ブロック
-    const originalScrollTo = window.scrollTo;
-    const originalScroll = window.scroll;
-
-    window.scrollTo = function (x, y) {
-      const currentScroll = window.pageYOffset || document.documentElement.scrollTop;
-      // スクロール位置が50px以上の場合、0へのスクロールをブロック
-      if (currentScroll > 50) {
-        if (y === 0 || (typeof x === 'object' && x && x.top === 0 && x.left === 0)) {
-          return; // scrollTop: 0をブロック
-        }
-      }
-      return originalScrollTo.apply(this, arguments);
-    };
-
-    window.scroll = function (x, y) {
-      const currentScroll = window.pageYOffset || document.documentElement.scrollTop;
-      // スクロール位置が50px以上の場合、0へのスクロールをブロック
-      if (currentScroll > 50) {
-        if (y === 0 || (typeof x === 'object' && x && x.top === 0 && x.left === 0)) {
-          return; // scrollTop: 0をブロック
-        }
-      }
-      return originalScroll.apply(this, arguments);
-    };
-
-    // scrollIntoViewも監視
-    const originalScrollIntoView = Element.prototype.scrollIntoView;
-    Element.prototype.scrollIntoView = function (options) {
-      const currentPos = window.pageYOffset || document.documentElement.scrollTop;
-      if (currentPos > 50) {
-        // スクロール位置が50px以上の場合、トップへのスクロールをブロック
-        if (!options || (options.block === 'start' && currentPos > 50)) {
-          return;
-        }
-      }
-      return originalScrollIntoView.apply(this, arguments);
-    };
-
-    // スクロール位置の自動復元（強力版）
-    let lastScrollTop = window.pageYOffset || document.documentElement.scrollTop;
-    let scrollProtectionActive = false;
-
-    const protectScrollPosition = () => {
-      const currentScrollTop = window.pageYOffset || document.documentElement.scrollTop;
-      const bodyScrollTop = document.body.scrollTop || 0;
-
-      // 突然0に戻された場合、直前の位置を復元
-      if (lastScrollTop > 50 && currentScrollTop === 0 && bodyScrollTop === 0 && !scrollProtectionActive) {
-        scrollProtectionActive = true;
-        setTimeout(() => {
-          if (originalScrollTo) {
-            originalScrollTo.call(window, 0, lastScrollTop);
-          }
-          scrollProtectionActive = false;
-        }, 10);
-      } else if (currentScrollTop > 0) {
-        lastScrollTop = currentScrollTop;
-      }
-    };
-
-    // より頻繁に監視（50ms間隔）
-    setInterval(protectScrollPosition, 50);
-
-    // scrollイベントでも監視（タップ時の自動スクロールは許可）
-    let scrollTimeout;
-    window.addEventListener('scroll', () => {
-      clearTimeout(scrollTimeout);
-      scrollTimeout = setTimeout(protectScrollPosition, 10);
-    }, { passive: true });
+    // 注意: 最初のスクロール保護処理（230-340行目）で既にオーバーライドされているため、
+    // ここでは重複を避ける（enableScroll()は広告削除後のスクロール有効化のみに集中）
+    console.log('[U-FRET Ad Blocker] enableScroll()完了:', {
+      timestamp: Date.now()
+    });
   }
 
   // MutationObserverでDOMの変更を監視（debounce付き）
   let removeTimeout = null;
   function observeDOM() {
+    console.log('[U-FRET Ad Blocker] MutationObserverを開始:', {
+      timestamp: Date.now()
+    });
     const observer = new MutationObserver((mutations) => {
       let shouldRemove = false;
       let shouldCheckScroll = false;
+      let addedNodesCount = 0;
+      let styleChangeCount = 0;
 
       mutations.forEach((mutation) => {
         if (mutation.addedNodes.length > 0) {
           shouldRemove = true;
+          addedNodesCount += mutation.addedNodes.length;
         }
 
         // スタイル属性の変更を監視
@@ -886,16 +1084,24 @@
           const target = mutation.target;
           if (target === document.body || target === document.documentElement) {
             shouldCheckScroll = true;
+            styleChangeCount++;
           }
         }
       });
 
       if (shouldRemove) {
+        console.log('[U-FRET Ad Blocker] DOM変更を検出 (広告削除予定):', {
+          addedNodesCount,
+          timestamp: Date.now()
+        });
         // debounce: 連続する変更をまとめて処理
         if (removeTimeout) {
           clearTimeout(removeTimeout);
         }
         removeTimeout = setTimeout(() => {
+          console.log('[U-FRET Ad Blocker] DOM変更から広告削除を実行:', {
+            timestamp: Date.now()
+          });
           removeAds();
           enableScroll(); // 広告削除後にスクロールを有効化
           removeTimeout = null;
@@ -903,6 +1109,10 @@
       }
 
       if (shouldCheckScroll) {
+        console.log('[U-FRET Ad Blocker] スタイル変更を検出 (スクロール有効化):', {
+          styleChangeCount,
+          timestamp: Date.now()
+        });
         // スタイル変更時は即座にスクロールを有効化
         enableScroll();
       }
@@ -923,6 +1133,10 @@
 
   // 早期削除: DOMが利用可能になったら即座に削除
   function earlyRemove() {
+    console.log('[U-FRET Ad Blocker] earlyRemove()実行:', {
+      hasDocumentElement: !!document.documentElement,
+      timestamp: Date.now()
+    });
     // document.documentElementが存在する場合、即座に削除を試みる
     if (document.documentElement) {
       removeAds();
@@ -931,25 +1145,44 @@
 
   // 初期化
   function init() {
+    console.log('[U-FRET Ad Blocker] init()開始:', {
+      readyState: document.readyState,
+      hasBody: !!document.body,
+      hasDocumentElement: !!document.documentElement,
+      timestamp: Date.now()
+    });
     // 即座に削除を試行（document_startで実行されるため）
     earlyRemove();
 
     // DOMが読み込まれるまで待機
     if (document.readyState === 'loading') {
+      console.log('[U-FRET Ad Blocker] DOM読み込み待機中:', {
+        timestamp: Date.now()
+      });
       // DOMContentLoaded前に複数回チェック
       const checkInterval = setInterval(() => {
         if (document.body) {
+          console.log('[U-FRET Ad Blocker] body検出 - 広告削除実行:', {
+            timestamp: Date.now()
+          });
           removeAds();
           clearInterval(checkInterval);
         }
       }, 100);
 
       document.addEventListener('DOMContentLoaded', () => {
+        console.log('[U-FRET Ad Blocker] DOMContentLoadedイベント:', {
+          timestamp: Date.now()
+        });
         clearInterval(checkInterval);
         removeAds();
         observeDOM();
       });
     } else {
+      console.log('[U-FRET Ad Blocker] DOM既に読み込み済み:', {
+        readyState: document.readyState,
+        timestamp: Date.now()
+      });
       // 既に読み込まれている場合
       removeAds();
       observeDOM();
@@ -957,15 +1190,27 @@
 
     // ページが完全に読み込まれた後も監視を続ける
     window.addEventListener('load', () => {
+      console.log('[U-FRET Ad Blocker] window.loadイベント:', {
+        timestamp: Date.now()
+      });
       setTimeout(() => {
+        console.log('[U-FRET Ad Blocker] window.load後 - 広告削除実行:', {
+          timestamp: Date.now()
+        });
         removeAds();
       }, 200); // 1000ms → 200msに短縮
     });
 
     // bodyが追加されたら即座に削除
     if (!document.body) {
+      console.log('[U-FRET Ad Blocker] body待機Observerを開始:', {
+        timestamp: Date.now()
+      });
       const bodyObserver = new MutationObserver(() => {
         if (document.body) {
+          console.log('[U-FRET Ad Blocker] body検出 (Observer) - 広告削除実行:', {
+            timestamp: Date.now()
+          });
           removeAds();
           bodyObserver.disconnect();
         }
@@ -974,19 +1219,34 @@
         childList: true
       });
     }
+    console.log('[U-FRET Ad Blocker] init()完了:', {
+      timestamp: Date.now()
+    });
   }
 
   // 広告関連のイベントリスナーを無効化（最優先）
+  console.log('[U-FRET Ad Blocker] 広告イベントリスナー無効化を開始:', {
+    timestamp: Date.now()
+  });
   disableAdEventListeners();
 
   // スクロール保護を初期化
+  console.log('[U-FRET Ad Blocker] スクロール保護エラー処理を開始:', {
+    timestamp: Date.now()
+  });
   protectScrollFromErrors();
 
   // 実行
+  console.log('[U-FRET Ad Blocker] スクリプト初期化開始:', {
+    timestamp: Date.now()
+  });
   init();
 
   // 定期的なチェック（動的に追加される要素に対応）
   // 2秒 → 500msに短縮（より頻繁にチェック）
+  console.log('[U-FRET Ad Blocker] 定期チェックを開始 (500ms間隔):', {
+    timestamp: Date.now()
+  });
   setInterval(() => {
     removeAds();
     enableScroll(); // 定期的にスクロール状態を確認・修正
@@ -994,7 +1254,18 @@
 
   // スクロール無効化を防ぐ: bodyとhtmlのスタイル変更を監視（強化版）
   function observeScrollPrevention() {
-    if (!document.body && !document.documentElement) return;
+    if (!document.body && !document.documentElement) {
+      console.log('[U-FRET Ad Blocker] observeScrollPrevention() - body/htmlが存在しない:', {
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    console.log('[U-FRET Ad Blocker] observeScrollPrevention()開始:', {
+      hasBody: !!document.body,
+      hasDocumentElement: !!document.documentElement,
+      timestamp: Date.now()
+    });
 
     // bodyとhtmlのスタイル変更を監視
     const styleObserver = new MutationObserver((mutations) => {
@@ -1002,11 +1273,18 @@
         const target = mutation.target;
         // style属性の変更を検出
         if (mutation.attributeName === 'style') {
+          console.log('[U-FRET Ad Blocker] スタイル変更検出 (observeScrollPrevention):', {
+            target: target === document.body ? 'body' : target === document.documentElement ? 'html' : target.tagName,
+            timestamp: Date.now()
+          });
           enableScroll();
         }
         // class属性の変更を検出（modal-openなど）
         if (mutation.attributeName === 'class') {
           if (target === document.body && target.classList.contains('modal-open')) {
+            console.log('[U-FRET Ad Blocker] modal-openクラス検出:', {
+              timestamp: Date.now()
+            });
             enableScroll();
           }
         }
@@ -1018,12 +1296,18 @@
         attributes: true,
         attributeFilter: ['style', 'class']
       });
+      console.log('[U-FRET Ad Blocker] bodyのスタイル監視を開始:', {
+        timestamp: Date.now()
+      });
     }
 
     if (document.documentElement) {
       styleObserver.observe(document.documentElement, {
         attributes: true,
         attributeFilter: ['style', 'class']
+      });
+      console.log('[U-FRET Ad Blocker] htmlのスタイル監視を開始:', {
+        timestamp: Date.now()
       });
     }
 
@@ -1033,7 +1317,19 @@
   // CSSで強制的にスクロールを許可（最後の手段）
   function injectScrollCSS() {
     const styleId = 'ufret-adblocker-scroll-fix';
-    if (document.getElementById(styleId)) return;
+    if (document.getElementById(styleId)) {
+      console.log('[U-FRET Ad Blocker] injectScrollCSS() - 既に注入済み:', {
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    console.log('[U-FRET Ad Blocker] injectScrollCSS()実行:', {
+      hasHead: !!document.head,
+      hasBody: !!document.body,
+      hasDocumentElement: !!document.documentElement,
+      timestamp: Date.now()
+    });
 
     const style = document.createElement('style');
     style.id = styleId;
@@ -1060,20 +1356,38 @@
     // headに追加（なければbodyに追加）
     if (document.head) {
       document.head.appendChild(style);
+      console.log('[U-FRET Ad Blocker] CSSをheadに注入:', {
+        timestamp: Date.now()
+      });
     } else if (document.body) {
       document.body.appendChild(style);
+      console.log('[U-FRET Ad Blocker] CSSをbodyに注入:', {
+        timestamp: Date.now()
+      });
     } else {
       document.documentElement.appendChild(style);
+      console.log('[U-FRET Ad Blocker] CSSをdocumentElementに注入:', {
+        timestamp: Date.now()
+      });
     }
   }
 
   // スクロール監視を開始
   if (document.body || document.documentElement) {
+    console.log('[U-FRET Ad Blocker] スクロール監視を開始:', {
+      timestamp: Date.now()
+    });
     observeScrollPrevention();
     injectScrollCSS();
   } else {
+    console.log('[U-FRET Ad Blocker] DOMContentLoadedを待機してスクロール監視を開始:', {
+      timestamp: Date.now()
+    });
     // bodyがまだない場合は、DOMContentLoadedを待つ
     document.addEventListener('DOMContentLoaded', () => {
+      console.log('[U-FRET Ad Blocker] DOMContentLoaded - スクロール監視を開始:', {
+        timestamp: Date.now()
+      });
       observeScrollPrevention();
       injectScrollCSS();
     });
@@ -1081,6 +1395,9 @@
 
   // 即座にCSSを注入（document_startで実行されるため）
   if (document.head || document.documentElement) {
+    console.log('[U-FRET Ad Blocker] 即座にCSS注入を試行:', {
+      timestamp: Date.now()
+    });
     injectScrollCSS();
   }
 
